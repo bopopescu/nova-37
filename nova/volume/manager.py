@@ -60,12 +60,22 @@ volume_manager_opts = [
     cfg.StrOpt('volume_driver',
                default='nova.volume.driver.ISCSIDriver',
                help='Driver to use for volume creation'),
+    cfg.StrOpt('volume_api',
+               default='nova.volume.api.API',
+               help='Api to use for volume creation'),
     cfg.BoolOpt('use_local_volumes',
                 default=True,
                 help='if True, will not discover local volumes'),
     cfg.BoolOpt('volume_force_update_capabilities',
                 default=False,
                 help='if True will force update capabilities on each check'),
+    cfg.IntOpt("volume_cleanup_manager_interval",
+                default=60,
+                help="Number of periodic scheduler ticks to wait between "
+                    "runs of the volume cleanup manager."),
+    cfg.IntOpt("volume_orphan_time_out",
+                default=60 * 60 * 24 * 7,
+                help="Time until reaper will destroy orphaned volumes."),
     ]
 
 FLAGS = flags.FLAGS
@@ -85,6 +95,8 @@ class VolumeManager(manager.SchedulerDependentManager):
         #             by the driver.
         self.driver.db = self.db
         self._last_volume_stats = []
+        self.volume_api = importutils.import_object(FLAGS.volume_api)
+
 
     def init_host(self):
         """Do any initialization that needs to be run if this is a
@@ -323,6 +335,23 @@ class VolumeManager(manager.SchedulerDependentManager):
             else:
                 # avoid repeating fanouts
                 self.update_service_capabilities(None)
+
+    @manager.periodic_task(
+        ticks_between_runs=FLAGS.volume_cleanup_manager_interval)
+    def _clean_up_volumes(self, context):
+        """Finds all volumes which are not associated to an instance."""
+        expiration_time = self.volume_orphan_time_out
+        latest_valid_time = utils.utcnow() - timedelta(seconds=expiration_time)
+        LOG.debug("Preparing to delete orphaned volumes updated before %s" %
+                  latest_valid_time)
+
+        ctxt = context.get_admin_context()
+        volumes = self.db.volume_get_orphans(ctxt, latest_valid_time)
+        if volumes:
+            for volume_ref in volumes:
+                self.volume_api.delete(context, volume_ref)
+                LOG.warn("Deleting an orphaned volume, %s with description %s" %
+                         (volume_ref['id'], volume_ref['display_description']))
 
     def _reset_stats(self):
         LOG.info(_("Clear capabilities"))

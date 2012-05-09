@@ -2539,6 +2539,17 @@ def volume_get_all_by_project(context, project_id):
 
 
 @require_admin_context
+def volume_get_orphans(context, latest_time):
+    result = model_query(context, models.Volume, read_deleted="no").\
+                    filter_by(deleted=False).\
+                    filter_by(instance_id=None).\
+                    filter(models.Volume.status=='available').\
+                    filter(models.Volume.updated_at < latest_time).\
+                    all()
+    return result
+
+
+@require_admin_context
 def volume_get_instance(context, volume_id):
     result = _volume_get_query(context).filter_by(id=volume_id).first()
 
